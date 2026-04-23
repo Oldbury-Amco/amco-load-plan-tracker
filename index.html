@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AMCO Load Plan Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="amco-logo-web.png" alt="AMCO logo" class="brand-logo" />
+        <div class="brand-copy">
+          <h1>Load Plan Tracker</h1>
+          <p>Live warehouse picking, checking and despatch board</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <label class="btn btn-outline upload-label" for="csvFile">Upload CSV</label>
+        <input id="csvFile" type="file" accept=".csv" hidden />
+        <button id="downloadCsvBtn" class="btn btn-outline">Download Status CSV</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section id="setupWarning" class="setup-warning hidden">
+      <div class="setup-warning-inner">
+        <strong>Setup needed:</strong> open <code>settings.js</code> and paste your Supabase URL and anon key, then refresh the page.
+      </div>
+    </section>
+
+    <section class="toolbar">
+      <div class="toolbar-group">
+        <label class="field-label">Tracker ID</label>
+        <input id="trackerIdInput" class="text-input" type="text" placeholder="oldbury-main" />
+      </div>
+
+      <div class="toolbar-group">
+        <label class="field-label">View</label>
+        <select id="viewMode" class="text-input">
+          <option value="current">Current load only</option>
+          <option value="all">All KENNs</option>
+        </select>
+      </div>
+
+      <div class="toolbar-group">
+        <label class="field-label">Current load</label>
+        <div class="load-nav">
+          <button id="prevLoadBtn" class="btn btn-dark btn-small">◀</button>
+          <span id="currentLoadBadge" class="load-badge">Load 1</span>
+          <button id="nextLoadBtn" class="btn btn-dark btn-small">▶</button>
+        </div>
+      </div>
+
+      <div class="toolbar-group">
+        <label class="field-label">KENNs per load</label>
+        <select id="loadSizeSelect" class="text-input">
+          <option>8</option>
+          <option>9</option>
+          <option>10</option>
+          <option selected>11</option>
+          <option>12</option>
+          <option>13</option>
+          <option>14</option>
+        </select>
+      </div>
+
+      <div class="toolbar-group search-group">
+        <label class="field-label">Search</label>
+        <input id="searchInput" class="text-input" type="text" placeholder="Search KENN / model / colour..." />
+      </div>
+    </section>
+
+    <section class="summary-wrap">
+      <div class="summary-left panel">
+        <div class="ring-wrap">
+          <svg class="progress-ring" viewBox="0 0 140 140">
+            <circle class="ring-track" cx="70" cy="70" r="50"></circle>
+            <circle id="ringComplete" class="ring-fill" cx="70" cy="70" r="50"></circle>
+            <text id="ringPct" x="70" y="66" text-anchor="middle" class="ring-number">0%</text>
+            <text x="70" y="84" text-anchor="middle" class="ring-label">COMPLETE</text>
+          </svg>
+        </div>
+        <div class="ring-metrics">
+          <div class="metric-line"><span class="dot dot-green"></span><span>Complete %</span><strong id="completePctText">0%</strong></div>
+          <div class="metric-line"><span class="dot dot-navy"></span><span>Despatched %</span><strong id="despatchedPctText">0%</strong></div>
+          <div class="metric-line"><span class="dot dot-amber"></span><span>In progress %</span><strong id="pickingPctText">0%</strong></div>
+          <div class="metric-line"><span class="dot dot-red"></span><span>Shortages</span><strong id="shortagesText">0</strong></div>
+        </div>
+      </div>
+
+      <div class="summary-tiles">
+        <div class="panel tile">
+          <div class="tile-number" id="totalKennsTile">0</div>
+          <div class="tile-label">Total KENNs</div>
+        </div>
+        <div class="panel tile tile-amber">
+          <div class="tile-number" id="pickingTile">0</div>
+          <div class="tile-label">Picking</div>
+        </div>
+        <div class="panel tile tile-blue">
+          <div class="tile-number" id="checkedTile">0</div>
+          <div class="tile-label">Checked</div>
+        </div>
+        <div class="panel tile tile-green">
+          <div class="tile-number" id="completeTile">0</div>
+          <div class="tile-label">Complete</div>
+        </div>
+        <div class="panel tile tile-navy">
+          <div class="tile-number" id="despatchedTile">0</div>
+          <div class="tile-label">Despatched</div>
+        </div>
+        <div class="panel tile tile-red">
+          <div class="tile-number" id="shortageTile">0</div>
+          <div class="tile-label">Shortages</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="status-bar panel">
+      <div class="status-left">
+        <strong id="displayTitle">Showing Load 1</strong>
+        <span id="recordCountText">0 rows shown</span>
+      </div>
+      <div class="status-right">
+        <span id="connectionBadge" class="badge badge-muted">Not connected</span>
+        <span id="saveBadge" class="badge badge-muted">Waiting</span>
+      </div>
+    </section>
+
+    <section class="tracker">
+      <div class="tracker-head row-grid">
+        <div class="col-info">KENN / LOAD / POSITION</div>
+        <div class="col-model">MODEL</div>
+        <div class="col-colour">COLOUR</div>
+        <div class="col-bumper">BUMPER</div>
+        <div class="col-cage">CAGE</div>
+        <div class="col-final">STATUS</div>
+        <div class="col-shortage">SHORTAGE</div>
+        <div class="col-done">DONE</div>
+      </div>
+
+      <div id="rowsContainer" class="rows-container"></div>
+      <div id="emptyState" class="panel empty-state hidden">No rows to display.</div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="settings.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

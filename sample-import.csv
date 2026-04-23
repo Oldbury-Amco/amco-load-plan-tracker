@@ -1,0 +1,13 @@
+kenn,model,gru,colour,notes,load_no,load_pos,bumper_picking,bumper_picked,cage_picking,cage_picked,checked,complete,despatched,shortage
+BN1BF0440001,631,Y,Beluga,Priority build,1,1,false,true,false,true,true,true,true,false
+BN1BF0440002,622,N,Glacier White,,1,2,true,true,true,true,true,true,false,false
+BN1BF0440003,615,Y,Onyx,,1,3,true,true,true,false,true,false,false,false
+BN1BF0440004,631,N,Beluga,Issue found,1,4,true,true,true,false,false,false,false,true
+BN1BF0440005,622,Y,Glacier White,,1,5,false,false,false,false,false,false,false,false
+BN1BF0440006,615,N,Onyx,,1,6,true,false,true,false,false,false,false,false
+BN1BF0440007,631,Y,Beluga,,1,7,false,false,false,false,false,false,false,false
+BN1BF0440008,622,N,Glacier White,,1,8,false,false,false,false,false,false,false,false
+BN1BF0440009,615,Y,Onyx,,1,9,false,false,false,false,false,false,false,false
+BN1BF0440010,631,N,Beluga,,1,10,false,false,false,false,false,false,false,false
+BN1BF0440011,622,Y,Glacier White,,1,11,false,false,false,false,false,false,false,false
+BN1BF0440012,615,N,Onyx,,2,1,false,false,false,false,false,false,false,false
