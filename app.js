@@ -1,3 +1,4 @@
+
 const appConfig = window.APP_CONFIG || {};
 const supabaseReady = appConfig.supabaseUrl && appConfig.supabaseAnonKey &&
   !appConfig.supabaseUrl.includes("PASTE_") && !appConfig.supabaseAnonKey.includes("PASTE_");
@@ -7,12 +8,18 @@ let trackerRows = [];
 let currentLoad = 1;
 let currentTrackerId = appConfig.trackerId || "oldbury-main";
 let realtimeChannel = null;
+let tvMode = localStorage.getItem("amco-tv-mode") === "1";
+let tvTimer = null;
+let editingNoteRowId = null;
+
+const STATUS_FIELDS = ["bumper_picking","bumper_picked","cage_picking","cage_picked","checked","complete","despatched","shortage"];
 
 const els = {
   setupWarning: document.getElementById("setupWarning"),
   csvFile: document.getElementById("csvFile"),
   downloadCsvBtn: document.getElementById("downloadCsvBtn"),
   trackerIdInput: document.getElementById("trackerIdInput"),
+  operatorInput: document.getElementById("operatorInput"),
   viewMode: document.getElementById("viewMode"),
   prevLoadBtn: document.getElementById("prevLoadBtn"),
   nextLoadBtn: document.getElementById("nextLoadBtn"),
@@ -37,7 +44,24 @@ const els = {
   despatchedPctText: document.getElementById("despatchedPctText"),
   pickingPctText: document.getElementById("pickingPctText"),
   shortagesText: document.getElementById("shortagesText"),
+  loadPctText: document.getElementById("loadPctText"),
+  tvModeBtn: document.getElementById("tvModeBtn"),
+  themeBtn: document.getElementById("themeBtn"),
+  noteModal: document.getElementById("noteModal"),
+  noteModalText: document.getElementById("noteModalText"),
+  noteCancelBtn: document.getElementById("noteCancelBtn"),
+  noteSaveBtn: document.getElementById("noteSaveBtn"),
 };
+
+function setTheme(theme){
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem("amco-theme", theme);
+  els.themeBtn.textContent = theme === "dark" ? "Light Mode" : "Dark Mode";
+}
+function initTheme(){
+  const saved = localStorage.getItem("amco-theme") || "light";
+  setTheme(saved);
+}
 
 function setConnectionState(text, kind){
   els.connectionBadge.textContent = text;
@@ -99,6 +123,30 @@ function toNumber(v){
   return Number.isFinite(n) ? n : 0;
 }
 
+function nowIso(){
+  return new Date().toISOString();
+}
+function formatStamp(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  if(Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString([], {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
+}
+function currentOperator(){
+  return (els.operatorInput.value || "").trim() || localStorage.getItem("amco-operator") || "Unknown";
+}
+
+function buildAuditPatch(field, value){
+  const operator = currentOperator();
+  const stampField = field + "_at";
+  const byField = field + "_by";
+  const patch = { [field]: value, [stampField]: value ? nowIso() : null, [byField]: value ? operator : null, updated_by: operator };
+  if(field === "shortage" && value){
+    patch.shortage_note = "";
+  }
+  return patch;
+}
+
 function normaliseImportedRows(rawRows){
   const loadSize = Number(els.loadSizeSelect.value || appConfig.defaultKennsPerLoad || 11);
   return rawRows.map((r, idx) => {
@@ -111,6 +159,7 @@ function normaliseImportedRows(rawRows){
       gru: r.gru || "",
       colour: r.colour || r.color || "",
       notes: r.notes || "",
+      shortage_note: r.shortage_note || "",
       load_no: loadNo,
       load_pos: loadPos,
       bumper_picking: truthy(r.bumper_picking),
@@ -121,12 +170,22 @@ function normaliseImportedRows(rawRows){
       complete: truthy(r.complete),
       despatched: truthy(r.despatched),
       shortage: truthy(r.shortage),
+      updated_by: r.updated_by || null
     };
   }).filter(r => r.kenn);
 }
 
 function currentMaxLoad(){
   return Math.max(1, ...trackerRows.map(r => Number(r.load_no || 1)));
+}
+function currentLoadRows(){
+  return trackerRows.filter(r => Number(r.load_no) === currentLoad);
+}
+function currentLoadCompletePct(){
+  const rows = currentLoadRows();
+  const total = rows.length;
+  if(!total) return 0;
+  return Math.round((rows.filter(r => r.complete).length / total) * 100);
 }
 
 function statusClass(row){
@@ -135,7 +194,6 @@ function statusClass(row){
   if(row.bumper_picking || row.cage_picking || row.checked) return "row-progress";
   return "";
 }
-
 function isDone(row){
   return !!(row.complete && row.despatched && !row.shortage);
 }
@@ -145,8 +203,9 @@ function filteredRows(){
   const mode = els.viewMode.value;
   return trackerRows.filter(row => {
     if(mode === "current" && Number(row.load_no) !== currentLoad) return false;
+    if(mode === "shortages" && !row.shortage) return false;
     if(search){
-      const hay = [row.kenn, row.model, row.colour, row.notes, row.gru].join(" ").toLowerCase();
+      const hay = [row.kenn, row.model, row.colour, row.notes, row.gru, row.shortage_note].join(" ").toLowerCase();
       if(!hay.includes(search)) return false;
     }
     return true;
@@ -167,6 +226,7 @@ function renderSummary(){
   const completePct = total ? Math.round((complete / total) * 100) : 0;
   const despatchedPct = total ? Math.round((despatched / total) * 100) : 0;
   const pickingPct = total ? Math.round((picking / total) * 100) : 0;
+  const loadPct = currentLoadCompletePct();
 
   els.totalKennsTile.textContent = total;
   els.pickingTile.textContent = picking;
@@ -179,6 +239,7 @@ function renderSummary(){
   els.despatchedPctText.textContent = despatchedPct + "%";
   els.pickingPctText.textContent = pickingPct + "%";
   els.shortagesText.textContent = shortages;
+  els.loadPctText.textContent = loadPct + "%";
 
   const radius = 50;
   const circumference = 2 * Math.PI * radius;
@@ -187,12 +248,20 @@ function renderSummary(){
   els.ringPct.textContent = completePct + "%";
 }
 
+function renderTimestamps(row){
+  const lines = [];
+  if(row.checked_at) lines.push(`<div class="ts-line">Checked ${formatStamp(row.checked_at)}${row.checked_by ? " • " + escapeHtml(row.checked_by) : ""}</div>`);
+  if(row.complete_at) lines.push(`<div class="ts-line">Complete ${formatStamp(row.complete_at)}${row.complete_by ? " • " + escapeHtml(row.complete_by) : ""}</div>`);
+  if(row.despatched_at) lines.push(`<div class="ts-line">Despatched ${formatStamp(row.despatched_at)}${row.despatched_by ? " • " + escapeHtml(row.despatched_by) : ""}</div>`);
+  return lines.length ? `<div class="ts-list">${lines.join("")}</div>` : "";
+}
+
 function renderRows(){
   const rows = filteredRows();
   els.rowsContainer.innerHTML = "";
   els.emptyState.classList.toggle("hidden", rows.length > 0);
   els.recordCountText.textContent = rows.length + (rows.length === 1 ? " row shown" : " rows shown");
-  els.displayTitle.textContent = els.viewMode.value === "current" ? `Showing Load ${currentLoad}` : "Showing All Loads";
+  els.displayTitle.textContent = els.viewMode.value === "current" ? `Showing Load ${currentLoad}` : els.viewMode.value === "shortages" ? "Showing Shortages" : "Showing All Loads";
   els.currentLoadBadge.textContent = `Load ${currentLoad} of ${currentMaxLoad()}`;
 
   rows.forEach(row => {
@@ -202,6 +271,7 @@ function renderRows(){
       <div class="col-info">
         <div class="kenn-main">${escapeHtml(row.kenn || "")}</div>
         <div class="kenn-sub">Load ${row.load_no || "-"} • Position ${row.load_pos || "-"}</div>
+        ${row.updated_by ? `<div class="mini-note">Last update by ${escapeHtml(row.updated_by)}</div>` : ""}
       </div>
       <div class="col-model">
         <div class="value-main">${escapeHtml(row.model || "-")}</div>
@@ -209,7 +279,8 @@ function renderRows(){
       </div>
       <div class="col-colour">
         <div class="value-main">${escapeHtml(row.colour || "-")}</div>
-        <div class="value-sub">${escapeHtml(row.notes || "")}</div>
+        ${row.notes ? `<div class="mini-note">${escapeHtml(row.notes)}</div>` : ""}
+        ${row.shortage && row.shortage_note ? `<div class="mini-note"><strong>Shortage:</strong> ${escapeHtml(row.shortage_note)}</div>` : ""}
       </div>
       <div class="col-bumper">
         <div class="stack-buttons">
@@ -229,10 +300,11 @@ function renderRows(){
           ${toggleButtonHtml(row, "complete", "Complete", "complete")}
           ${toggleButtonHtml(row, "despatched", "Despatched", "despatched")}
         </div>
+        ${renderTimestamps(row)}
       </div>
       <div class="col-shortage">
         <div class="stack-buttons single-1">
-          ${toggleButtonHtml(row, "shortage", "Shortage", "shortage")}
+          ${toggleButtonHtml(row, "shortage", row.shortage_note ? "Shortage ✎" : "Shortage", "shortage")}
         </div>
       </div>
       <div class="col-done done-cell">
@@ -251,6 +323,25 @@ function toggleButtonHtml(row, field, label, cssClass){
   return `<button class="status-btn ${cssClass} ${on ? "on" : "off"}" data-row-id="${row.id}" data-field="${field}">${label}</button>`;
 }
 
+async function updateRow(rowId, patch){
+  setSaveState("Saving...");
+  const { error } = await supabaseClient.from("tracker_rows").update(patch).eq("id", rowId);
+  if(error) throw error;
+  setSaveState("Saved");
+}
+
+function openShortageModal(rowId){
+  editingNoteRowId = rowId;
+  const row = trackerRows.find(r => Number(r.id) === Number(rowId));
+  els.noteModalText.value = row?.shortage_note || "";
+  els.noteModal.classList.remove("hidden");
+  setTimeout(() => els.noteModalText.focus(), 10);
+}
+function closeShortageModal(){
+  editingNoteRowId = null;
+  els.noteModal.classList.add("hidden");
+}
+
 function bindRowButtons(){
   document.querySelectorAll(".status-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -259,27 +350,52 @@ function bindRowButtons(){
       const row = trackerRows.find(r => Number(r.id) === rowId);
       if(!row || !supabaseClient) return;
 
-      const next = !row[field];
-      const patch = { [field]: next };
+      if(!currentOperator() || currentOperator() === "Unknown"){
+        alert("Enter your name in the Operator box first.");
+        els.operatorInput.focus();
+        return;
+      }
 
-      if(field === "shortage" && next){
-        patch.complete = false;
-        patch.despatched = false;
+      const next = !row[field];
+      const patch = buildAuditPatch(field, next);
+
+      if(field === "shortage"){
+        if(next){
+          patch.complete = false;
+          patch.complete_at = null;
+          patch.complete_by = null;
+          patch.despatched = false;
+          patch.despatched_at = null;
+          patch.despatched_by = null;
+        } else {
+          patch.shortage_note = "";
+        }
       }
       if(field === "complete" && next){
         patch.shortage = false;
+        patch.shortage_at = null;
+        patch.shortage_by = null;
       }
       if(field === "despatched" && next){
         patch.complete = true;
+        patch.complete_at = row.complete_at || nowIso();
+        patch.complete_by = row.complete_by || currentOperator();
         patch.checked = true;
+        patch.checked_at = row.checked_at || nowIso();
+        patch.checked_by = row.checked_by || currentOperator();
         patch.shortage = false;
+        patch.shortage_at = null;
+        patch.shortage_by = null;
+      }
+      if(field === "shortage" && next){
+        patch.shortage_note = row.shortage_note || "";
       }
 
       try{
-        setSaveState("Saving...");
-        const { error } = await supabaseClient.from("tracker_rows").update(patch).eq("id", rowId);
-        if(error) throw error;
-        setSaveState("Saved");
+        await updateRow(rowId, patch);
+        if(field === "shortage" && next){
+          openShortageModal(rowId);
+        }
       }catch(err){
         console.error(err);
         setSaveState("Save failed");
@@ -347,9 +463,10 @@ async function replaceRowsFromCsv(file){
 
 function exportCsv(){
   const headers = [
-    "kenn","model","gru","colour","notes","load_no","load_pos",
+    "kenn","model","gru","colour","notes","shortage_note","load_no","load_pos",
     "bumper_picking","bumper_picked","cage_picking","cage_picked",
-    "checked","complete","despatched","shortage"
+    "checked","complete","despatched","shortage","updated_by",
+    "checked_at","complete_at","despatched_at","shortage_at"
   ];
   const lines = [headers.join(",")];
   [...trackerRows].sort((a,b) => (a.load_no - b.load_no) || (a.load_pos - b.load_pos)).forEach(row => {
@@ -368,10 +485,48 @@ function csvValue(v){
   return /[",\n]/.test(s) ? `"${s.replaceAll('"','""')}"` : s;
 }
 
+function subscribeRealtime(){
+  if(!supabaseClient) return;
+  if(realtimeChannel){
+    supabaseClient.removeChannel(realtimeChannel);
+  }
+  realtimeChannel = supabaseClient
+    .channel(`tracker-${currentTrackerId}`)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "tracker_rows",
+      filter: `tracker_id=eq.${currentTrackerId}`
+    }, () => {
+      loadRows();
+    })
+    .subscribe();
+}
+
+function applyTvMode(){
+  els.tvModeBtn.textContent = `TV Mode: ${tvMode ? "On" : "Off"}`;
+  if(tvTimer){
+    clearInterval(tvTimer);
+    tvTimer = null;
+  }
+  if(tvMode){
+    tvTimer = setInterval(() => {
+      if(els.viewMode.value === "current"){
+        currentLoad = currentLoad >= currentMaxLoad() ? 1 : currentLoad + 1;
+        renderRows();
+      }
+    }, 8000);
+  }
+}
+
 function initEvents(){
   els.trackerIdInput.value = currentTrackerId;
   els.loadSizeSelect.value = String(appConfig.defaultKennsPerLoad || 11);
+  els.operatorInput.value = localStorage.getItem("amco-operator") || "";
 
+  els.operatorInput.addEventListener("change", () => {
+    localStorage.setItem("amco-operator", els.operatorInput.value.trim());
+  });
   els.trackerIdInput.addEventListener("change", async () => {
     currentTrackerId = els.trackerIdInput.value.trim() || "oldbury-main";
     if(supabaseClient){
@@ -395,28 +550,35 @@ function initEvents(){
     if(file) await replaceRowsFromCsv(file);
     e.target.value = "";
   });
-}
-
-function subscribeRealtime(){
-  if(!supabaseClient) return;
-  if(realtimeChannel){
-    supabaseClient.removeChannel(realtimeChannel);
-  }
-  realtimeChannel = supabaseClient
-    .channel(`tracker-${currentTrackerId}`)
-    .on("postgres_changes", {
-      event: "*",
-      schema: "public",
-      table: "tracker_rows",
-      filter: `tracker_id=eq.${currentTrackerId}`
-    }, () => {
-      loadRows();
-    })
-    .subscribe();
+  els.tvModeBtn.addEventListener("click", () => {
+    tvMode = !tvMode;
+    localStorage.setItem("amco-tv-mode", tvMode ? "1" : "0");
+    applyTvMode();
+  });
+  els.themeBtn.addEventListener("click", () => {
+    const next = (localStorage.getItem("amco-theme") || "light") === "light" ? "dark" : "light";
+    setTheme(next);
+  });
+  els.noteCancelBtn.addEventListener("click", closeShortageModal);
+  els.noteSaveBtn.addEventListener("click", async () => {
+    if(!editingNoteRowId) return;
+    try{
+      await updateRow(editingNoteRowId, { shortage_note: els.noteModalText.value.trim(), updated_by: currentOperator() });
+      closeShortageModal();
+    }catch(err){
+      console.error(err);
+      alert("Could not save shortage note.");
+    }
+  });
+  els.noteModal.addEventListener("click", (e) => {
+    if(e.target === els.noteModal) closeShortageModal();
+  });
 }
 
 async function initApp(){
+  initTheme();
   initEvents();
+  applyTvMode();
 
   if(!supabaseReady){
     els.setupWarning.classList.remove("hidden");
