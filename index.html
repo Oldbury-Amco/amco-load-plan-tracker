@@ -16,6 +16,7 @@
 </div></div></header>
 <main class="page">
 <div id="setupWarning" class="setup-warning hidden"><strong>Setup needed:</strong> check <code>settings.js</code>.</div>
+
 <section class="toolbar">
 <div><label>Shipment Date</label><select id="shipmentDateFilter" class="text-input"><option value="active">Active dates</option><option value="all">All dates</option></select></div>
 <div><label>View</label><select id="viewMode" class="text-input"><option value="current">Current load only</option><option value="all">All KENNs</option><option value="shortages">Shortages only</option><option value="due">Due / incomplete</option></select></div>
@@ -23,14 +24,36 @@
 <div><label>KENNs per load</label><select id="loadSizeSelect" class="text-input"><option>8</option><option>9</option><option>10</option><option selected>11</option><option>12</option><option>13</option><option>14</option></select></div>
 <div class="search-group"><label>Search</label><input id="searchInput" class="text-input" placeholder="KENN / model / colour / shortage..."></div>
 </section>
+
 <section id="loadCompleteBanner" class="load-banner hidden"><strong>Load Complete ✓</strong><span>No open shortages on this load.</span></section>
+
 <section class="summary-wrap">
-<div class="summary-left panel"><svg class="progress-ring" viewBox="0 0 140 140"><circle class="ring-track" cx="70" cy="70" r="50"></circle><circle id="ringComplete" class="ring-fill" cx="70" cy="70" r="50"></circle><text id="ringPct" x="70" y="66" text-anchor="middle" class="ring-number">0%</text><text x="70" y="84" text-anchor="middle" class="ring-label">COMPLETE</text></svg><div class="ring-metrics"><div><span class="dot green"></span>Complete <b id="completePctText">0%</b></div><div><span class="dot navy"></span>Despatched <b id="despatchedPctText">0%</b></div><div><span class="dot amber"></span>In progress <b id="pickingPctText">0%</b></div><div><span class="dot red"></span>Open shortages <b id="shortagesText">0</b></div><div><span class="dot blue"></span>Current load <b id="loadPctText">0%</b></div></div></div>
-<div class="summary-tiles"><div class="panel tile"><div id="totalKennsTile">0</div><span>Total</span></div><div class="panel tile amber"><div id="pickingTile">0</div><span>Picking</span></div><div class="panel tile blue"><div id="checkedTile">0</div><span>Checked</span></div><div class="panel tile green"><div id="completeTile">0</div><span>Complete</span></div><div class="panel tile navy"><div id="despatchedTile">0</div><span>Despatched</span></div><div class="panel tile red"><div id="shortageTile">0</div><span>Shortages</span></div></div>
+<div class="summary-left panel">
+<svg class="progress-ring" viewBox="0 0 140 140"><circle class="ring-track" cx="70" cy="70" r="50"></circle><circle id="ringComplete" class="ring-fill" cx="70" cy="70" r="50"></circle><text id="ringPct" x="70" y="66" text-anchor="middle" class="ring-number">0%</text><text x="70" y="84" text-anchor="middle" class="ring-label">COMPLETE</text></svg>
+<div class="ring-metrics">
+<div><span class="dot dot-green"></span>Complete <b id="completePctText">0</b></div>
+<div><span class="dot dot-navy"></span>Despatched <b id="despatchedPctText">0</b></div>
+<div><span class="dot dot-amber"></span>In progress <b id="pickingPctText">0</b></div>
+<div><span class="dot dot-red"></span>Open shortages <b id="shortagesText">0</b></div>
+<div><span class="dot dot-blue"></span>Current load <b id="loadPctText">0%</b></div>
+</div>
+</div>
+<div class="summary-tiles">
+<div class="panel tile"><div id="totalKennsTile">0</div><span>Total</span></div>
+<div class="panel tile tile-amber"><div id="pickingTile">0</div><span>Picking</span></div>
+<div class="panel tile tile-blue"><div id="checkedTile">0</div><span>Checked</span></div>
+<div class="panel tile tile-green"><div id="completeTile">0</div><span>Complete</span></div>
+<div class="panel tile tile-navy"><div id="despatchedTile">0</div><span>Despatched</span></div>
+<div class="panel tile tile-red"><div id="shortageTile">0</div><span>Shortages</span></div>
+</div>
 </section>
-<section class="panel alerts-panel"><div><span>Oldest open shortage</span><strong id="oldestShortageText">None</strong></div><div><span>Current load status</span><strong id="currentLoadStatusText">No data</strong></div><div><span>Data source</span><strong>Manual / Excel feed ready</strong></div></section>
+
 <section class="status-bar panel"><div><strong id="displayTitle">Showing Load 1</strong><span id="recordCountText">0 rows shown</span></div><div><span id="connectionBadge" class="badge muted">Not connected</span><span id="saveBadge" class="badge muted">Waiting</span></div></section>
-<section class="tracker"><div class="tracker-head row-grid"><div>KENN / LOAD / DATE</div><div>MODEL</div><div>COLOUR / TYPE</div><div>BUMPER</div><div>CAGE</div><div>STATUS</div><div>SHORTAGE</div><div>DONE</div></div><div id="rowsContainer" class="rows-container"></div><div id="emptyState" class="panel empty hidden">No rows to display.</div></section>
+
+<section class="tracker">
+<div class="tracker-head row-grid"><div>KENN / LOAD / DATE / DETAILS</div><div>BUMPER</div><div>CAGE</div><div>STATUS</div><div>SHORTAGE</div><div>DONE</div></div>
+<div id="rowsContainer" class="rows-container"></div><div id="emptyState" class="panel empty hidden">No rows to display.</div>
+</section>
 </main>
 <div id="noteModal" class="modal hidden"><div class="modal-card"><h3>Shortage note</h3><p>Add or update the shortage reason/action.</p><textarea id="noteModalText" rows="5"></textarea><div class="modal-actions"><button id="noteCancelBtn" class="btn btn-outline">Cancel</button><button id="noteSaveBtn" class="btn btn-dark">Save Note</button></div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script src="settings.js"></script><script src="app.js"></script>
