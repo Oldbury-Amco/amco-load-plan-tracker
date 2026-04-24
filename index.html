@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AMCO Load Plan Tracker V2</title>
+  <title>AMCO Load Plan Tracker V3</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -13,12 +13,12 @@
         <img src="amco-logo-web.png" alt="AMCO logo" class="brand-logo" />
         <div class="brand-copy">
           <h1>Load Plan Tracker</h1>
-          <p>Live warehouse picking, checking and despatch board</p>
+          <p>Live warehouse picking, shortage and despatch board</p>
         </div>
       </div>
 
       <div class="header-actions">
-        <button id="tvModeBtn" class="btn btn-outline">TV Mode: Off</button>
+        <button id="autoRotateBtn" class="btn btn-outline">Auto Rotate Loads: Off</button>
         <button id="themeBtn" class="btn btn-outline">Dark Mode</button>
         <label class="btn btn-outline upload-label" for="csvFile">Upload CSV</label>
         <input id="csvFile" type="file" accept=".csv" hidden />
@@ -30,19 +30,16 @@
   <main class="page">
     <section id="setupWarning" class="setup-warning hidden">
       <div class="setup-warning-inner">
-        <strong>Setup needed:</strong> open <code>settings.js</code> and paste your Supabase URL and publishable key, then refresh.
+        <strong>Setup needed:</strong> check <code>settings.js</code> has your Supabase URL and publishable key.
       </div>
     </section>
 
     <section class="toolbar">
       <div class="toolbar-group">
-        <label class="field-label">Operator</label>
-        <input id="operatorInput" class="text-input" type="text" placeholder="Enter your name" />
-      </div>
-
-      <div class="toolbar-group">
-        <label class="field-label">Tracker ID</label>
-        <input id="trackerIdInput" class="text-input" type="text" placeholder="oldbury-main" />
+        <label class="field-label">Shipment Date</label>
+        <select id="shipmentDateFilter" class="text-input">
+          <option value="all">All shipment dates</option>
+        </select>
       </div>
 
       <div class="toolbar-group">
@@ -66,19 +63,13 @@
       <div class="toolbar-group">
         <label class="field-label">KENNs per load</label>
         <select id="loadSizeSelect" class="text-input">
-          <option>8</option>
-          <option>9</option>
-          <option>10</option>
-          <option selected>11</option>
-          <option>12</option>
-          <option>13</option>
-          <option>14</option>
+          <option>8</option><option>9</option><option>10</option><option selected>11</option><option>12</option><option>13</option><option>14</option>
         </select>
       </div>
 
       <div class="toolbar-group search-group">
         <label class="field-label">Search</label>
-        <input id="searchInput" class="text-input" type="text" placeholder="Search KENN / model / colour..." />
+        <input id="searchInput" class="text-input" type="text" placeholder="Search KENN / model / colour / shortage..." />
       </div>
     </section>
 
@@ -102,30 +93,12 @@
       </div>
 
       <div class="summary-tiles">
-        <div class="panel tile">
-          <div class="tile-number" id="totalKennsTile">0</div>
-          <div class="tile-label">Total KENNs</div>
-        </div>
-        <div class="panel tile tile-amber">
-          <div class="tile-number" id="pickingTile">0</div>
-          <div class="tile-label">Picking</div>
-        </div>
-        <div class="panel tile tile-blue">
-          <div class="tile-number" id="checkedTile">0</div>
-          <div class="tile-label">Checked</div>
-        </div>
-        <div class="panel tile tile-green">
-          <div class="tile-number" id="completeTile">0</div>
-          <div class="tile-label">Complete</div>
-        </div>
-        <div class="panel tile tile-navy">
-          <div class="tile-number" id="despatchedTile">0</div>
-          <div class="tile-label">Despatched</div>
-        </div>
-        <div class="panel tile tile-red">
-          <div class="tile-number" id="shortageTile">0</div>
-          <div class="tile-label">Shortages</div>
-        </div>
+        <div class="panel tile"><div class="tile-number" id="totalKennsTile">0</div><div class="tile-label">Total KENNs</div></div>
+        <div class="panel tile tile-amber"><div class="tile-number" id="pickingTile">0</div><div class="tile-label">Picking</div></div>
+        <div class="panel tile tile-blue"><div class="tile-number" id="checkedTile">0</div><div class="tile-label">Checked</div></div>
+        <div class="panel tile tile-green"><div class="tile-number" id="completeTile">0</div><div class="tile-label">Complete</div></div>
+        <div class="panel tile tile-navy"><div class="tile-number" id="despatchedTile">0</div><div class="tile-label">Despatched</div></div>
+        <div class="panel tile tile-red"><div class="tile-number" id="shortageTile">0</div><div class="tile-label">Shortages</div></div>
       </div>
     </section>
 
@@ -142,16 +115,15 @@
 
     <section class="tracker">
       <div class="tracker-head row-grid">
-        <div class="col-info">KENN / LOAD / POSITION</div>
+        <div class="col-info">KENN / LOAD / DATE</div>
         <div class="col-model">MODEL</div>
-        <div class="col-colour">COLOUR / NOTES</div>
+        <div class="col-colour">COLOUR / TYPE</div>
         <div class="col-bumper">BUMPER</div>
         <div class="col-cage">CAGE</div>
         <div class="col-final">STATUS</div>
         <div class="col-shortage">SHORTAGE</div>
         <div class="col-done">DONE</div>
       </div>
-
       <div id="rowsContainer" class="rows-container"></div>
       <div id="emptyState" class="panel empty-state hidden">No rows to display.</div>
     </section>
@@ -160,8 +132,8 @@
   <div id="noteModal" class="modal hidden">
     <div class="modal-card">
       <h3>Shortage note</h3>
-      <p>Add or update the shortage reason / action needed for this KENN.</p>
-      <textarea id="noteModalText" rows="5" placeholder="Type shortage note..."></textarea>
+      <p>Add the shortage reason or action needed. This will display clearly on the row.</p>
+      <textarea id="noteModalText" rows="5" placeholder="e.g. Cage missing, damaged bumper, awaiting part..."></textarea>
       <div class="modal-actions">
         <button id="noteCancelBtn" class="btn btn-outline">Cancel</button>
         <button id="noteSaveBtn" class="btn btn-dark">Save Note</button>
