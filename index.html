@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AMCO Load Plan Tracker</title>
+  <title>AMCO Load Plan Tracker V2</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -18,6 +18,8 @@
       </div>
 
       <div class="header-actions">
+        <button id="tvModeBtn" class="btn btn-outline">TV Mode: Off</button>
+        <button id="themeBtn" class="btn btn-outline">Dark Mode</button>
         <label class="btn btn-outline upload-label" for="csvFile">Upload CSV</label>
         <input id="csvFile" type="file" accept=".csv" hidden />
         <button id="downloadCsvBtn" class="btn btn-outline">Download Status CSV</button>
@@ -28,11 +30,16 @@
   <main class="page">
     <section id="setupWarning" class="setup-warning hidden">
       <div class="setup-warning-inner">
-        <strong>Setup needed:</strong> open <code>settings.js</code> and paste your Supabase URL and anon key, then refresh the page.
+        <strong>Setup needed:</strong> open <code>settings.js</code> and paste your Supabase URL and publishable key, then refresh.
       </div>
     </section>
 
     <section class="toolbar">
+      <div class="toolbar-group">
+        <label class="field-label">Operator</label>
+        <input id="operatorInput" class="text-input" type="text" placeholder="Enter your name" />
+      </div>
+
       <div class="toolbar-group">
         <label class="field-label">Tracker ID</label>
         <input id="trackerIdInput" class="text-input" type="text" placeholder="oldbury-main" />
@@ -43,6 +50,7 @@
         <select id="viewMode" class="text-input">
           <option value="current">Current load only</option>
           <option value="all">All KENNs</option>
+          <option value="shortages">Shortages only</option>
         </select>
       </div>
 
@@ -89,6 +97,7 @@
           <div class="metric-line"><span class="dot dot-navy"></span><span>Despatched %</span><strong id="despatchedPctText">0%</strong></div>
           <div class="metric-line"><span class="dot dot-amber"></span><span>In progress %</span><strong id="pickingPctText">0%</strong></div>
           <div class="metric-line"><span class="dot dot-red"></span><span>Shortages</span><strong id="shortagesText">0</strong></div>
+          <div class="metric-line"><span class="dot dot-blue"></span><span>Current load done</span><strong id="loadPctText">0%</strong></div>
         </div>
       </div>
 
@@ -135,7 +144,7 @@
       <div class="tracker-head row-grid">
         <div class="col-info">KENN / LOAD / POSITION</div>
         <div class="col-model">MODEL</div>
-        <div class="col-colour">COLOUR</div>
+        <div class="col-colour">COLOUR / NOTES</div>
         <div class="col-bumper">BUMPER</div>
         <div class="col-cage">CAGE</div>
         <div class="col-final">STATUS</div>
@@ -147,6 +156,18 @@
       <div id="emptyState" class="panel empty-state hidden">No rows to display.</div>
     </section>
   </main>
+
+  <div id="noteModal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Shortage note</h3>
+      <p>Add or update the shortage reason / action needed for this KENN.</p>
+      <textarea id="noteModalText" rows="5" placeholder="Type shortage note..."></textarea>
+      <div class="modal-actions">
+        <button id="noteCancelBtn" class="btn btn-outline">Cancel</button>
+        <button id="noteSaveBtn" class="btn btn-dark">Save Note</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="settings.js"></script>
