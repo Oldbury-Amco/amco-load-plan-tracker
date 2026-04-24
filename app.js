@@ -1,356 +1,46 @@
 
-const appConfig = window.APP_CONFIG || {};
-const supabaseReady = appConfig.supabaseUrl && appConfig.supabaseAnonKey &&
-  !appConfig.supabaseUrl.includes("PASTE_") && !appConfig.supabaseAnonKey.includes("PASTE_");
-
-let supabaseClient = null;
-let trackerRows = [];
-let currentLoad = 1;
-let currentTrackerId = appConfig.trackerId || "oldbury-main";
-let realtimeChannel = null;
-let autoRotate = localStorage.getItem("amco-auto-rotate") === "1";
-let autoRotateTimer = null;
-let editingNoteRowId = null;
-
-const els = {
-  setupWarning: document.getElementById("setupWarning"),
-  csvFile: document.getElementById("csvFile"),
-  downloadCsvBtn: document.getElementById("downloadCsvBtn"),
-  viewMode: document.getElementById("viewMode"),
-  prevLoadBtn: document.getElementById("prevLoadBtn"),
-  nextLoadBtn: document.getElementById("nextLoadBtn"),
-  currentLoadBadge: document.getElementById("currentLoadBadge"),
-  loadSizeSelect: document.getElementById("loadSizeSelect"),
-  searchInput: document.getElementById("searchInput"),
-  shipmentDateFilter: document.getElementById("shipmentDateFilter"),
-  rowsContainer: document.getElementById("rowsContainer"),
-  emptyState: document.getElementById("emptyState"),
-  displayTitle: document.getElementById("displayTitle"),
-  recordCountText: document.getElementById("recordCountText"),
-  connectionBadge: document.getElementById("connectionBadge"),
-  saveBadge: document.getElementById("saveBadge"),
-  totalKennsTile: document.getElementById("totalKennsTile"),
-  pickingTile: document.getElementById("pickingTile"),
-  checkedTile: document.getElementById("checkedTile"),
-  completeTile: document.getElementById("completeTile"),
-  despatchedTile: document.getElementById("despatchedTile"),
-  shortageTile: document.getElementById("shortageTile"),
-  ringComplete: document.getElementById("ringComplete"),
-  ringPct: document.getElementById("ringPct"),
-  completePctText: document.getElementById("completePctText"),
-  despatchedPctText: document.getElementById("despatchedPctText"),
-  pickingPctText: document.getElementById("pickingPctText"),
-  shortagesText: document.getElementById("shortagesText"),
-  loadPctText: document.getElementById("loadPctText"),
-  autoRotateBtn: document.getElementById("autoRotateBtn"),
-  themeBtn: document.getElementById("themeBtn"),
-  noteModal: document.getElementById("noteModal"),
-  noteModalText: document.getElementById("noteModalText"),
-  noteCancelBtn: document.getElementById("noteCancelBtn"),
-  noteSaveBtn: document.getElementById("noteSaveBtn"),
-};
-
-function setTheme(theme){
-  document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem("amco-theme", theme);
-  els.themeBtn.textContent = theme === "dark" ? "Light Mode" : "Dark Mode";
-}
-function initTheme(){ setTheme(localStorage.getItem("amco-theme") || "light"); }
-function setConnectionState(text, kind){
-  els.connectionBadge.textContent = text;
-  els.connectionBadge.className = "badge";
-  els.connectionBadge.classList.add(kind === "ok" ? "badge-green" : "badge-red");
-}
-function setSaveState(text){ els.saveBadge.textContent = text; els.saveBadge.className = "badge badge-muted"; }
-function normaliseKey(key){ return String(key || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
-function splitCsvLine(line){
-  const out=[]; let current=""; let inQuotes=false;
-  for(let i=0;i<line.length;i++){
-    const ch=line[i];
-    if(ch === '"'){ if(inQuotes && line[i+1] === '"'){ current+='"'; i++; } else { inQuotes=!inQuotes; } }
-    else if(ch === "," && !inQuotes){ out.push(current); current=""; }
-    else { current += ch; }
-  }
-  out.push(current); return out;
-}
-function parseCsv(text){
-  const lines=text.replace(/\r/g,"").split("\n").filter(Boolean);
-  if(!lines.length) return [];
-  const headers=splitCsvLine(lines[0]).map(normaliseKey);
-  return lines.slice(1).map(line => {
-    const cells=splitCsvLine(line); const obj={};
-    headers.forEach((h,idx) => obj[h]=(cells[idx] || "").trim());
-    return obj;
-  }).filter(obj => Object.values(obj).some(v => String(v).trim() !== ""));
-}
-function truthy(v){ const t=String(v || "").trim().toLowerCase(); return ["1","true","yes","y","done"].includes(t); }
-function toNumber(v){ const n=Number(v); return Number.isFinite(n) ? n : 0; }
-function nowIso(){ return new Date().toISOString(); }
-function formatDate(value){
-  if(!value) return "";
-  const d = new Date(value);
-  if(Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleDateString("en-GB", {day:"2-digit", month:"2-digit", year:"numeric"});
-}
-function formatStamp(iso){
-  if(!iso) return "";
-  const d=new Date(iso);
-  if(Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("en-GB", {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
-}
-function normaliseBuildType(row){
-  const raw = String(row.build_type || row.gru || row.bespoke || "").trim();
-  if(raw.toLowerCase() === "bespoke" || raw.toLowerCase() === "yes" || raw.toLowerCase() === "y" || raw === "1") return "Bespoke";
-  return raw && raw.toLowerCase() !== "n" && raw.toLowerCase() !== "no" ? raw : "";
-}
-function normaliseImportedRows(rawRows){
-  const loadSize=Number(els.loadSizeSelect.value || appConfig.defaultKennsPerLoad || 11);
-  return rawRows.map((r,idx) => {
-    const loadNo = toNumber(r.load_no || r.load || r.load_number) || (Math.floor(idx/loadSize)+1);
-    const loadPos = toNumber(r.load_pos || r.position || r.load_position) || ((idx%loadSize)+1);
-    return {
-      tracker_id: currentTrackerId,
-      kenn: r.kenn || r.reference || "",
-      model: r.model || "",
-      build_type: normaliseBuildType(r),
-      colour: r.colour || r.color || "",
-      notes: r.notes || "",
-      shipment_date: r.shipment_date || r.ship_date || r.date || null,
-      shortage_note: r.shortage_note || "",
-      load_no: loadNo,
-      load_pos: loadPos,
-      bumper_picking: truthy(r.bumper_picking),
-      bumper_picked: truthy(r.bumper_picked),
-      cage_picking: truthy(r.cage_picking),
-      cage_picked: truthy(r.cage_picked),
-      checked: truthy(r.checked),
-      complete: truthy(r.complete),
-      despatched: truthy(r.despatched),
-      shortage: truthy(r.shortage)
-    };
-  }).filter(r => r.kenn);
-}
-function currentMaxLoad(){ return Math.max(1, ...trackerRows.map(r => Number(r.load_no || 1))); }
-function currentLoadRows(){ return visibleBaseRows().filter(r => Number(r.load_no) === currentLoad); }
-function currentLoadCompletePct(){ const rows=currentLoadRows(); return rows.length ? Math.round((rows.filter(r=>r.complete).length/rows.length)*100) : 0; }
-function statusClass(row){
-  if(row.shortage) return "row-shortage";
-  if(row.complete && !row.shortage) return "row-complete";
-  if(row.bumper_picking || row.cage_picking || row.checked) return "row-progress";
-  return "";
-}
-function isDone(row){ return !!(row.complete && row.despatched && !row.shortage); }
-function uniqueShipmentDates(){
-  return [...new Set(trackerRows.map(r => r.shipment_date).filter(Boolean))].sort();
-}
-function updateShipmentFilterOptions(){
-  const current = els.shipmentDateFilter.value;
-  const dates = uniqueShipmentDates();
-  els.shipmentDateFilter.innerHTML = `<option value="all">All shipment dates</option>` + dates.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(formatDate(d))}</option>`).join("");
-  if(dates.includes(current)) els.shipmentDateFilter.value = current;
-}
-function visibleBaseRows(){
-  const dateFilter = els.shipmentDateFilter.value;
-  return trackerRows.filter(r => dateFilter === "all" || String(r.shipment_date) === String(dateFilter));
-}
-function filteredRows(){
-  const search=els.searchInput.value.trim().toLowerCase();
-  const mode=els.viewMode.value;
-  return visibleBaseRows().filter(row => {
-    if(mode === "current" && Number(row.load_no) !== currentLoad) return false;
-    if(mode === "shortages" && !row.shortage) return false;
-    if(search){
-      const hay=[row.kenn,row.model,row.colour,row.notes,row.build_type,row.shortage_note,row.shipment_date].join(" ").toLowerCase();
-      if(!hay.includes(search)) return false;
-    }
-    return true;
-  }).sort((a,b) => (a.load_no-b.load_no) || (a.load_pos-b.load_pos) || String(a.kenn).localeCompare(String(b.kenn)));
-}
-function renderSummary(){
-  const base=visibleBaseRows();
-  const total=base.length;
-  const picking=base.filter(r => r.bumper_picking || r.cage_picking).length;
-  const checked=base.filter(r => r.checked).length;
-  const complete=base.filter(r => r.complete).length;
-  const despatched=base.filter(r => r.despatched).length;
-  const shortages=base.filter(r => r.shortage).length;
-  const completePct=total ? Math.round((complete/total)*100) : 0;
-  const despatchedPct=total ? Math.round((despatched/total)*100) : 0;
-  const pickingPct=total ? Math.round((picking/total)*100) : 0;
-  els.totalKennsTile.textContent=total; els.pickingTile.textContent=picking; els.checkedTile.textContent=checked; els.completeTile.textContent=complete; els.despatchedTile.textContent=despatched; els.shortageTile.textContent=shortages;
-  els.completePctText.textContent=completePct+"%"; els.despatchedPctText.textContent=despatchedPct+"%"; els.pickingPctText.textContent=pickingPct+"%"; els.shortagesText.textContent=shortages; els.loadPctText.textContent=currentLoadCompletePct()+"%";
-  const r=50,c=2*Math.PI*r,p=(completePct/100)*c;
-  els.ringComplete.style.strokeDasharray=`${p} ${c}`; els.ringPct.textContent=completePct+"%";
-}
-function renderTimestamps(row){
-  const lines=[];
-  if(row.checked_at) lines.push(`<div class="ts-line">Checked ${formatStamp(row.checked_at)}</div>`);
-  if(row.complete_at) lines.push(`<div class="ts-line">Complete ${formatStamp(row.complete_at)}</div>`);
-  if(row.despatched_at) lines.push(`<div class="ts-line">Despatched ${formatStamp(row.despatched_at)}</div>`);
-  if(row.shortage_at) lines.push(`<div class="ts-line">Shortage ${formatStamp(row.shortage_at)}</div>`);
-  return lines.length ? `<div class="ts-list">${lines.join("")}</div>` : "";
-}
-function renderRows(){
-  updateShipmentFilterOptions();
-  const rows=filteredRows();
-  els.rowsContainer.innerHTML="";
-  els.emptyState.classList.toggle("hidden", rows.length>0);
-  els.recordCountText.textContent=rows.length+(rows.length===1 ? " row shown" : " rows shown");
-  els.displayTitle.textContent=els.viewMode.value === "current" ? `Showing Load ${currentLoad}` : els.viewMode.value === "shortages" ? "Showing Shortages" : "Showing All Loads";
-  els.currentLoadBadge.textContent=`Load ${currentLoad} of ${currentMaxLoad()}`;
-  rows.forEach(row => {
-    const rowEl=document.createElement("div");
-    rowEl.className=`row row-grid ${statusClass(row)}`;
-    rowEl.innerHTML=`
-      <div class="col-info">
-        <div class="kenn-main">${escapeHtml(row.kenn || "")}</div>
-        <div class="kenn-sub">Load ${row.load_no || "-"} • Position ${row.load_pos || "-"}</div>
-        ${row.shipment_date ? `<div class="shipment-line">Shipment ${escapeHtml(formatDate(row.shipment_date))}</div>` : ""}
-      </div>
-      <div class="col-model"><div class="value-main">${escapeHtml(row.model || "-")}</div></div>
-      <div class="col-colour">
-        <div class="value-main">${escapeHtml(row.colour || "-")}</div>
-        ${row.build_type && String(row.build_type).toLowerCase()==="bespoke" ? `<span class="bespoke-badge">BESPOKE</span>` : ""}
-        ${row.notes ? `<div class="mini-note">${escapeHtml(row.notes)}</div>` : ""}
-      </div>
-      <div class="col-bumper"><div class="stack-buttons">${toggleButtonHtml(row,"bumper_picking","Picking","bumper-picking")}${toggleButtonHtml(row,"bumper_picked","Picked","bumper-picked")}</div></div>
-      <div class="col-cage"><div class="stack-buttons">${toggleButtonHtml(row,"cage_picking","Picking","cage-picking")}${toggleButtonHtml(row,"cage_picked","Picked","cage-picked")}</div></div>
-      <div class="col-final">
-        <div class="stack-buttons single-3">${toggleButtonHtml(row,"checked","Checked","checked")}${toggleButtonHtml(row,"complete","Complete","complete")}${toggleButtonHtml(row,"despatched","Despatched","despatched")}</div>
-        ${renderTimestamps(row)}
-      </div>
-      <div class="col-shortage">
-        <div class="stack-buttons single-1">${toggleButtonHtml(row,"shortage",row.shortage ? "SHORTAGE" : "Shortage","shortage")}</div>
-        ${row.shortage ? `<span class="shortage-badge">RED SHORTAGE</span>${row.shortage_note ? `<span class="shortage-note-preview">${escapeHtml(row.shortage_note)}</span>` : `<span class="shortage-note-preview">Click shortage again to update note</span>`}` : ""}
-      </div>
-      <div class="col-done done-cell"><div class="done-check ${isDone(row) ? "is-done" : ""}">${isDone(row) ? "✓" : "–"}</div></div>
-    `;
-    els.rowsContainer.appendChild(rowEl);
-  });
-  bindRowButtons();
-  renderSummary();
-}
-function toggleButtonHtml(row,field,label,cssClass){ const on=!!row[field]; return `<button class="status-btn ${cssClass} ${on?"on":"off"}" data-row-id="${row.id}" data-field="${field}">${label}</button>`; }
-function escapeHtml(v){ return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;"); }
-async function updateRow(rowId, patch){
-  setSaveState("Saving...");
-  const { error } = await supabaseClient.from("tracker_rows").update(patch).eq("id", rowId);
-  if(error) throw error;
-  setSaveState("Saved");
-}
-function openShortageModal(rowId){
-  editingNoteRowId=rowId;
-  const row=trackerRows.find(r => Number(r.id) === Number(rowId));
-  els.noteModalText.value=row?.shortage_note || "";
-  els.noteModal.classList.remove("hidden");
-  setTimeout(() => els.noteModalText.focus(),10);
-}
-function closeShortageModal(){ editingNoteRowId=null; els.noteModal.classList.add("hidden"); }
-function bindRowButtons(){
-  document.querySelectorAll(".status-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const rowId=Number(btn.dataset.rowId), field=btn.dataset.field;
-      const row=trackerRows.find(r => Number(r.id) === rowId);
-      if(!row || !supabaseClient) return;
-      const next=!row[field];
-      const patch={ [field]:next };
-      if(field==="checked") patch.checked_at = next ? nowIso() : null;
-      if(field==="complete"){ patch.complete_at = next ? nowIso() : null; if(next){ patch.shortage=false; patch.shortage_at=null; } }
-      if(field==="despatched"){ patch.despatched_at = next ? nowIso() : null; if(next){ patch.complete=true; patch.complete_at = row.complete_at || nowIso(); patch.checked=true; patch.checked_at = row.checked_at || nowIso(); patch.shortage=false; patch.shortage_at=null; } }
-      if(field==="shortage"){ patch.shortage_at = next ? nowIso() : null; if(next){ patch.complete=false; patch.complete_at=null; patch.despatched=false; patch.despatched_at=null; } else { patch.shortage_note=""; } }
-      try{
-        await updateRow(rowId, patch);
-        if(field==="shortage" && next) openShortageModal(rowId);
-        if(field==="shortage" && !next && row.shortage_note) openShortageModal(rowId);
-      }catch(err){ console.error(err); setSaveState("Save failed"); alert("Update failed. Check Supabase setup."); }
-    });
-  });
-}
-async function loadRows(){
-  if(!supabaseClient) return;
-  const { data, error } = await supabaseClient.from("tracker_rows").select("*").eq("tracker_id", currentTrackerId).order("shipment_date",{ascending:true}).order("load_no",{ascending:true}).order("load_pos",{ascending:true});
-  if(error){ console.error(error); setConnectionState("Supabase error","bad"); return; }
-  trackerRows=data || [];
-  currentLoad=Math.min(currentLoad,currentMaxLoad());
-  renderRows();
-}
-async function replaceRowsFromCsv(file){
-  if(!supabaseClient) return;
-  const raw=await file.text();
-  const parsed=parseCsv(raw);
-  const rows=normaliseImportedRows(parsed);
-  if(!rows.length){ alert("No valid rows were found in the CSV."); return; }
-  const ok=confirm(`Replace all rows in tracker "${currentTrackerId}" with ${rows.length} imported KENNs?`);
-  if(!ok) return;
-  try{
-    setSaveState("Replacing rows...");
-    const { error: deleteError }=await supabaseClient.from("tracker_rows").delete().eq("tracker_id",currentTrackerId);
-    if(deleteError) throw deleteError;
-    const { error: insertError }=await supabaseClient.from("tracker_rows").insert(rows);
-    if(insertError) throw insertError;
-    setSaveState("Import complete");
-  }catch(err){ console.error(err); setSaveState("Import failed"); alert("CSV import failed. Check schema has V3 columns."); }
-}
-function exportCsv(){
-  const headers=["kenn","model","build_type","colour","notes","shipment_date","shortage_note","load_no","load_pos","bumper_picking","bumper_picked","cage_picking","cage_picked","checked","complete","despatched","shortage","checked_at","complete_at","despatched_at","shortage_at"];
-  const lines=[headers.join(",")];
-  [...trackerRows].sort((a,b) => String(a.shipment_date||"").localeCompare(String(b.shipment_date||"")) || (a.load_no-b.load_no) || (a.load_pos-b.load_pos)).forEach(row => {
-    lines.push(headers.map(h => csvValue(row[h])).join(","));
-  });
-  const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8;"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`${currentTrackerId}-tracker-export.csv`; a.click(); URL.revokeObjectURL(a.href);
-}
-function csvValue(v){ const s=String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replaceAll('"','""')}"` : s; }
-function subscribeRealtime(){
-  if(!supabaseClient) return;
-  if(realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
-  realtimeChannel = supabaseClient.channel(`tracker-${currentTrackerId}`)
-    .on("postgres_changes",{event:"*",schema:"public",table:"tracker_rows",filter:`tracker_id=eq.${currentTrackerId}`}, () => loadRows())
-    .subscribe();
-}
-function applyAutoRotate(){
-  els.autoRotateBtn.textContent=`Auto Rotate Loads: ${autoRotate ? "On" : "Off"}`;
-  if(autoRotateTimer){ clearInterval(autoRotateTimer); autoRotateTimer=null; }
-  if(autoRotate){
-    autoRotateTimer=setInterval(() => {
-      if(els.viewMode.value === "current"){
-        currentLoad = currentLoad >= currentMaxLoad() ? 1 : currentLoad + 1;
-        renderRows();
-      }
-    }, 8000);
-  }
-}
-function initEvents(){
-  els.loadSizeSelect.value=String(appConfig.defaultKennsPerLoad || 11);
-  els.viewMode.addEventListener("change", renderRows);
-  els.searchInput.addEventListener("input", renderRows);
-  els.shipmentDateFilter.addEventListener("change", () => { currentLoad=1; renderRows(); });
-  els.prevLoadBtn.addEventListener("click", () => { currentLoad=Math.max(1,currentLoad-1); renderRows(); });
-  els.nextLoadBtn.addEventListener("click", () => { currentLoad=Math.min(currentMaxLoad(),currentLoad+1); renderRows(); });
-  els.downloadCsvBtn.addEventListener("click", exportCsv);
-  els.csvFile.addEventListener("change", async e => { const file=e.target.files && e.target.files[0]; if(file) await replaceRowsFromCsv(file); e.target.value=""; });
-  els.autoRotateBtn.addEventListener("click", () => { autoRotate=!autoRotate; localStorage.setItem("amco-auto-rotate",autoRotate?"1":"0"); applyAutoRotate(); });
-  els.themeBtn.addEventListener("click", () => { const next=(localStorage.getItem("amco-theme") || "light")==="light" ? "dark" : "light"; setTheme(next); });
-  els.noteCancelBtn.addEventListener("click", closeShortageModal);
-  els.noteSaveBtn.addEventListener("click", async () => {
-    if(!editingNoteRowId) return;
-    try{ await updateRow(editingNoteRowId,{shortage_note:els.noteModalText.value.trim()}); closeShortageModal(); }
-    catch(err){ console.error(err); alert("Could not save shortage note."); }
-  });
-  els.noteModal.addEventListener("click", e => { if(e.target === els.noteModal) closeShortageModal(); });
-}
-function setTheme(theme){ document.documentElement.setAttribute("data-theme",theme); localStorage.setItem("amco-theme",theme); els.themeBtn.textContent=theme==="dark"?"Light Mode":"Dark Mode"; }
-function initTheme(){ setTheme(localStorage.getItem("amco-theme") || "light"); }
-async function initApp(){
-  initTheme(); initEvents(); applyAutoRotate();
-  if(!supabaseReady){ els.setupWarning.classList.remove("hidden"); setConnectionState("Setup needed","bad"); renderSummary(); renderRows(); return; }
-  try{
-    supabaseClient=window.supabase.createClient(appConfig.supabaseUrl,appConfig.supabaseAnonKey);
-    setConnectionState("Connecting...","ok");
-    subscribeRealtime();
-    await loadRows();
-    setConnectionState("Live connected","ok");
-    setSaveState("Ready");
-  }catch(err){ console.error(err); setConnectionState("Connection failed","bad"); els.setupWarning.classList.remove("hidden"); }
-}
-initApp();
+const cfg=window.APP_CONFIG||{};
+const supabaseReady=cfg.supabaseUrl&&cfg.supabaseAnonKey&&!cfg.supabaseUrl.includes("PASTE_")&&!cfg.supabaseAnonKey.includes("PASTE_");
+let supabaseClient=null,rows=[],currentLoad=1,currentTrackerId=cfg.trackerId||"oldbury-main",channel=null,autoRotate=localStorage.getItem("amco-auto-rotate")==="1",autoTimer=null,editingNoteRowId=null;
+const $=id=>document.getElementById(id);
+const els={setupWarning:$("setupWarning"),csvFile:$("csvFile"),downloadCsvBtn:$("downloadCsvBtn"),downloadSummaryBtn:$("downloadSummaryBtn"),viewMode:$("viewMode"),prevLoadBtn:$("prevLoadBtn"),nextLoadBtn:$("nextLoadBtn"),currentLoadBadge:$("currentLoadBadge"),loadSizeSelect:$("loadSizeSelect"),searchInput:$("searchInput"),shipmentDateFilter:$("shipmentDateFilter"),rowsContainer:$("rowsContainer"),emptyState:$("emptyState"),displayTitle:$("displayTitle"),recordCountText:$("recordCountText"),connectionBadge:$("connectionBadge"),saveBadge:$("saveBadge"),totalKennsTile:$("totalKennsTile"),pickingTile:$("pickingTile"),checkedTile:$("checkedTile"),completeTile:$("completeTile"),despatchedTile:$("despatchedTile"),shortageTile:$("shortageTile"),ringComplete:$("ringComplete"),ringPct:$("ringPct"),completePctText:$("completePctText"),despatchedPctText:$("despatchedPctText"),pickingPctText:$("pickingPctText"),shortagesText:$("shortagesText"),loadPctText:$("loadPctText"),autoRotateBtn:$("autoRotateBtn"),themeBtn:$("themeBtn"),noteModal:$("noteModal"),noteModalText:$("noteModalText"),noteCancelBtn:$("noteCancelBtn"),noteSaveBtn:$("noteSaveBtn"),loadCompleteBanner:$("loadCompleteBanner"),oldestShortageText:$("oldestShortageText"),currentLoadStatusText:$("currentLoadStatusText")};
+function theme(t){document.documentElement.setAttribute("data-theme",t);localStorage.setItem("amco-theme",t);els.themeBtn.textContent=t==="dark"?"Light Mode":"Dark Mode"}
+function setBadge(el,t,k){el.textContent=t;el.className="badge "+(k==="ok"?"ok":k==="bad"?"bad":"muted")}
+function norm(k){return String(k||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"")}
+function csvLine(line){let out=[],cur="",q=false;for(let i=0;i<line.length;i++){let ch=line[i];if(ch==='"'){if(q&&line[i+1]==='"'){cur+='"';i++}else q=!q}else if(ch===","&&!q){out.push(cur);cur=""}else cur+=ch}out.push(cur);return out}
+function parseCsv(t){let lines=t.replace(/\r/g,"").split("\n").filter(Boolean);if(!lines.length)return[];let h=csvLine(lines[0]).map(norm);return lines.slice(1).map(l=>{let c=csvLine(l),o={};h.forEach((x,i)=>o[x]=(c[i]||"").trim());return o}).filter(o=>Object.values(o).some(v=>String(v).trim()))}
+function truthy(v){return["1","true","yes","y","done"].includes(String(v||"").trim().toLowerCase())}
+function num(v){let n=Number(v);return Number.isFinite(n)?n:0}
+function now(){return new Date().toISOString()}
+function fmtDate(v){if(!v)return"";let d=new Date(v);return Number.isNaN(d.getTime())?String(v):d.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"numeric"})}
+function fmtTime(v){if(!v)return"";let d=new Date(v);return Number.isNaN(d.getTime())?"":d.toLocaleString("en-GB",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}
+function buildType(r){let raw=String(r.build_type||r.gru||r.bespoke||"").trim();if(["bespoke","yes","y","1","true"].includes(raw.toLowerCase()))return"Bespoke";return raw&&!["n","no","false","0"].includes(raw.toLowerCase())?raw:""}
+function importRows(raw){let loadSize=Number(els.loadSizeSelect.value||cfg.defaultKennsPerLoad||11);return raw.map((r,i)=>({tracker_id:currentTrackerId,kenn:r.kenn||r.reference||"",model:r.model||"",build_type:buildType(r),colour:r.colour||r.color||"",notes:r.notes||"",shipment_date:r.shipment_date||r.ship_date||r.date||null,shortage_note:r.shortage_note||"",load_no:num(r.load_no||r.load||r.load_number)||(Math.floor(i/loadSize)+1),load_pos:num(r.load_pos||r.position||r.load_position)||((i%loadSize)+1),bumper_picking:truthy(r.bumper_picking),bumper_picked:truthy(r.bumper_picked),cage_picking:truthy(r.cage_picking),cage_picked:truthy(r.cage_picked),checked:truthy(r.checked),complete:truthy(r.complete),despatched:truthy(r.despatched),shortage:truthy(r.shortage)})).filter(r=>r.kenn)}
+function dates(){return[...new Set(rows.map(r=>r.shipment_date).filter(Boolean))].sort()}
+function updateDateOptions(){let cur=els.shipmentDateFilter.value,d=dates();els.shipmentDateFilter.innerHTML=`<option value="active">Active dates</option><option value="all">All dates</option>`+d.map(x=>`<option value="${esc(x)}">${esc(fmtDate(x))}</option>`).join("");if(d.includes(cur)||cur==="all"||cur==="active")els.shipmentDateFilter.value=cur}
+function baseRows(){let f=els.shipmentDateFilter.value;if(f==="all"||f==="active")return rows;return rows.filter(r=>String(r.shipment_date)===String(f))}
+function maxLoad(){return Math.max(1,...baseRows().map(r=>Number(r.load_no||1)))}
+function loadSet(){return baseRows().filter(r=>Number(r.load_no)===currentLoad)}
+function isDone(r){return!!(r.complete&&r.despatched&&!r.shortage)}
+function rowCls(r){if(r.shortage)return"row-shortage";if(r.complete&&!r.shortage)return"row-complete";if(r.bumper_picking||r.cage_picking||r.checked)return"row-progress";return""}
+function filtered(){let s=els.searchInput.value.trim().toLowerCase(),m=els.viewMode.value;return baseRows().filter(r=>{if(m==="current"&&Number(r.load_no)!==currentLoad)return false;if(m==="shortages"&&!r.shortage)return false;if(m==="due"&&(r.despatched||r.complete))return false;if(s&&![r.kenn,r.model,r.colour,r.notes,r.build_type,r.shortage_note,r.shipment_date].join(" ").toLowerCase().includes(s))return false;return true}).sort((a,b)=>{if(a.shortage!==b.shortage)return a.shortage?-1:1;if(a.despatched!==b.despatched)return a.despatched?1:-1;return(a.load_no-b.load_no)||(a.load_pos-b.load_pos)||String(a.kenn).localeCompare(String(b.kenn))})}
+function renderSummary(){let b=baseRows(),total=b.length,picking=b.filter(r=>r.bumper_picking||r.cage_picking).length,checked=b.filter(r=>r.checked).length,complete=b.filter(r=>r.complete).length,despatched=b.filter(r=>r.despatched).length,shortages=b.filter(r=>r.shortage).length,cp=total?Math.round(complete/total*100):0,dp=total?Math.round(despatched/total*100):0,pp=total?Math.round(picking/total*100):0,lr=loadSet(),lp=lr.length?Math.round(lr.filter(r=>r.complete).length/lr.length*100):0;els.totalKennsTile.textContent=total;els.pickingTile.textContent=picking;els.checkedTile.textContent=checked;els.completeTile.textContent=complete;els.despatchedTile.textContent=despatched;els.shortageTile.textContent=shortages;els.completePctText.textContent=cp+"%";els.despatchedPctText.textContent=dp+"%";els.pickingPctText.textContent=pp+"%";els.shortagesText.textContent=shortages;els.loadPctText.textContent=lp+"%";let c=2*Math.PI*50;els.ringComplete.style.strokeDasharray=`${cp/100*c} ${c}`;els.ringPct.textContent=cp+"%";let open=b.filter(r=>r.shortage).sort((a,b)=>String(a.shortage_at||"").localeCompare(String(b.shortage_at||"")))[0];els.oldestShortageText.textContent=open?`${open.kenn} • ${fmtTime(open.shortage_at)||"open"}`:"None";let openInLoad=lr.filter(r=>r.shortage).length;els.currentLoadStatusText.textContent=lr.length?`${lr.filter(r=>r.complete).length}/${lr.length} complete • ${openInLoad} shortages`:"No data";els.loadCompleteBanner.classList.toggle("hidden",!(lr.length&&lr.every(r=>r.complete)&&lr.every(r=>!r.shortage)))}
+function stamps(r){let l=[];if(r.checked_at)l.push(`<div class="ts-line">Checked ${fmtTime(r.checked_at)}</div>`);if(r.complete_at)l.push(`<div class="ts-line">Complete ${fmtTime(r.complete_at)}</div>`);if(r.despatched_at)l.push(`<div class="ts-line">Despatched ${fmtTime(r.despatched_at)}</div>`);if(r.shortage_at)l.push(`<div class="ts-line">Shortage ${fmtTime(r.shortage_at)}</div>`);return l.length?`<div>${l.join("")}</div>`:""}
+function btn(r,f,label,cls){return`<button class="status-btn ${cls} ${r[f]?"on":"off"}" data-row-id="${r.id}" data-field="${f}">${label}</button>`}
+function esc(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;")}
+function renderRows(){updateDateOptions();let rs=filtered();els.rowsContainer.innerHTML="";els.emptyState.classList.toggle("hidden",rs.length>0);els.recordCountText.textContent=rs.length+(rs.length===1?" row shown":" rows shown");els.displayTitle.textContent=els.viewMode.value==="current"?`Showing Load ${currentLoad}`:els.viewMode.value==="shortages"?"Showing Shortages":els.viewMode.value==="due"?"Showing Due / Incomplete":"Showing All Loads";els.currentLoadBadge.textContent=`Load ${currentLoad} of ${maxLoad()}`;rs.forEach(r=>{let el=document.createElement("div");el.className=`row row-grid ${rowCls(r)}`;el.innerHTML=`<div><div class="kenn-main">${esc(r.kenn)}</div><div class="kenn-sub">Load ${r.load_no||"-"} • Position ${r.load_pos||"-"}</div>${r.shipment_date?`<div class="shipment-line">Shipment ${esc(fmtDate(r.shipment_date))}</div>`:""}</div><div><div class="value-main">${esc(r.model||"-")}</div></div><div><div class="value-main">${esc(r.colour||"-")}</div>${r.build_type&&String(r.build_type).toLowerCase()==="bespoke"?`<span class="bespoke-badge">BESPOKE</span>`:""}${r.notes?`<div class="mini-note">${esc(r.notes)}</div>`:""}</div><div><div class="stack-buttons">${btn(r,"bumper_picking","Picking","bumper-picking")}${btn(r,"bumper_picked","Picked","bumper-picked")}</div></div><div><div class="stack-buttons">${btn(r,"cage_picking","Picking","cage-picking")}${btn(r,"cage_picked","Picked","cage-picked")}</div></div><div><div class="stack-buttons single-3">${btn(r,"checked","Checked","checked")}${btn(r,"complete","Complete","complete")}${btn(r,"despatched","Despatched","despatched")}</div>${stamps(r)}</div><div><div class="stack-buttons single-1">${btn(r,"shortage",r.shortage?"SHORTAGE":"Shortage","shortage")}<button class="status-btn reset" data-reset-id="${r.id}">Reset</button></div>${r.shortage_note?`<span class="shortage-note-preview" data-note-id="${r.id}">${esc(r.shortage_note)}</span>`:""}</div><div class="done-cell"><div class="done-check ${isDone(r)?"is-done":""}">${isDone(r)?"✓":"–"}</div></div>`;els.rowsContainer.appendChild(el)});bindButtons();renderSummary()}
+async function patch(id,p){setBadge(els.saveBadge,"Saving...","neutral");let{error}=await supabaseClient.from("tracker_rows").update(p).eq("id",id);if(error)throw error;setBadge(els.saveBadge,"Saved","neutral")}
+function openNote(id){editingNoteRowId=id;let r=rows.find(x=>Number(x.id)===Number(id));els.noteModalText.value=r?.shortage_note||"";els.noteModal.classList.remove("hidden");setTimeout(()=>els.noteModalText.focus(),10)}
+function closeNote(){editingNoteRowId=null;els.noteModal.classList.add("hidden")}
+function bindButtons(){document.querySelectorAll(".status-btn[data-field]").forEach(b=>b.onclick=async()=>{let id=Number(b.dataset.rowId),f=b.dataset.field,r=rows.find(x=>Number(x.id)===id),next=!r[f],p={[f]:next};if(f==="checked")p.checked_at=next?now():null;if(f==="complete"){p.complete_at=next?now():null;if(next){p.shortage=false;p.shortage_at=null}}if(f==="despatched"){if(next&&!confirm("Mark this KENN as despatched?"))return;p.despatched_at=next?now():null;if(next){p.complete=true;p.complete_at=r.complete_at||now();p.checked=true;p.checked_at=r.checked_at||now();p.shortage=false;p.shortage_at=null}}if(f==="shortage"){p.shortage_at=next?now():null;if(next){p.complete=false;p.complete_at=null;p.despatched=false;p.despatched_at=null}else p.shortage_note=""}try{await patch(id,p);if(f==="shortage"&&next)openNote(id)}catch(e){console.error(e);alert("Update failed")}});document.querySelectorAll("[data-reset-id]").forEach(b=>b.onclick=async()=>{if(!confirm("Reset all statuses for this KENN?"))return;try{await patch(Number(b.dataset.resetId),{bumper_picking:false,bumper_picked:false,cage_picking:false,cage_picked:false,checked:false,complete:false,despatched:false,shortage:false,shortage_note:"",bumper_picking_at:null,bumper_picked_at:null,cage_picking_at:null,cage_picked_at:null,checked_at:null,complete_at:null,despatched_at:null,shortage_at:null})}catch(e){alert("Reset failed")}});document.querySelectorAll("[data-note-id]").forEach(n=>n.onclick=()=>openNote(Number(n.dataset.noteId)))}
+async function load(){let{data,error}=await supabaseClient.from("tracker_rows").select("*").eq("tracker_id",currentTrackerId).order("shipment_date",{ascending:true}).order("load_no",{ascending:true}).order("load_pos",{ascending:true});if(error){console.error(error);setBadge(els.connectionBadge,"Supabase error","bad");return}rows=data||[];currentLoad=Math.min(currentLoad,maxLoad());renderRows()}
+async function importCsv(file){let raw=await file.text(),parsed=parseCsv(raw),newRows=importRows(parsed);if(!newRows.length)return alert("No valid rows found");if(!confirm(`Replace all rows with ${newRows.length} imported KENNs?`))return;try{setBadge(els.saveBadge,"Importing...","neutral");let d=await supabaseClient.from("tracker_rows").delete().eq("tracker_id",currentTrackerId);if(d.error)throw d.error;let i=await supabaseClient.from("tracker_rows").insert(newRows);if(i.error)throw i.error;setBadge(els.saveBadge,"Import complete","neutral")}catch(e){console.error(e);alert("Import failed. Check V4 SQL has been run.")}}
+function csvVal(v){let s=String(v??"");return /[",\n]/.test(s)?`"${s.replaceAll('"','""')}"`:s}
+function exportRows(){let h=["kenn","model","build_type","colour","notes","shipment_date","shortage_note","load_no","load_pos","bumper_picking","bumper_picked","cage_picking","cage_picked","checked","complete","despatched","shortage","checked_at","complete_at","despatched_at","shortage_at"],lines=[h.join(",")];rows.forEach(r=>lines.push(h.map(x=>csvVal(r[x])).join(",")));download(lines.join("\n"),"amco-tracker-rows.csv")}
+function exportSummary(){let b=baseRows(),loads=[...new Set(b.map(r=>r.load_no))].sort((a,b)=>a-b),h=["load_no","total","complete","despatched","shortages","percent_complete"],lines=[h.join(",")];loads.forEach(l=>{let rs=b.filter(r=>r.load_no===l),total=rs.length,c=rs.filter(r=>r.complete).length,d=rs.filter(r=>r.despatched).length,s=rs.filter(r=>r.shortage).length,p=total?Math.round(c/total*100):0;lines.push([l,total,c,d,s,p+"%"].join(","))});download(lines.join("\n"),"amco-daily-summary.csv")}
+function download(text,name){let blob=new Blob([text],{type:"text/csv;charset=utf-8;"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();URL.revokeObjectURL(a.href)}
+function subscribe(){if(channel)supabaseClient.removeChannel(channel);channel=supabaseClient.channel(`tracker-${currentTrackerId}`).on("postgres_changes",{event:"*",schema:"public",table:"tracker_rows",filter:`tracker_id=eq.${currentTrackerId}`},()=>load()).subscribe()}
+function auto(){els.autoRotateBtn.textContent=`Auto Rotate: ${autoRotate?"On":"Off"}`;if(autoTimer)clearInterval(autoTimer);if(autoRotate)autoTimer=setInterval(()=>{if(els.viewMode.value==="current"){currentLoad=currentLoad>=maxLoad()?1:currentLoad+1;renderRows()}},8000)}
+function events(){els.loadSizeSelect.value=String(cfg.defaultKennsPerLoad||11);els.viewMode.onchange=renderRows;els.searchInput.oninput=renderRows;els.shipmentDateFilter.onchange=()=>{currentLoad=1;renderRows()};els.prevLoadBtn.onclick=()=>{currentLoad=Math.max(1,currentLoad-1);renderRows()};els.nextLoadBtn.onclick=()=>{currentLoad=Math.min(maxLoad(),currentLoad+1);renderRows()};els.downloadCsvBtn.onclick=exportRows;els.downloadSummaryBtn.onclick=exportSummary;els.csvFile.onchange=async e=>{let f=e.target.files?.[0];if(f)await importCsv(f);e.target.value=""};els.autoRotateBtn.onclick=()=>{autoRotate=!autoRotate;localStorage.setItem("amco-auto-rotate",autoRotate?"1":"0");auto()};els.themeBtn.onclick=()=>theme((localStorage.getItem("amco-theme")||"light")==="light"?"dark":"light");els.noteCancelBtn.onclick=closeNote;els.noteSaveBtn.onclick=async()=>{if(!editingNoteRowId)return;try{await patch(editingNoteRowId,{shortage_note:els.noteModalText.value.trim()});closeNote()}catch(e){alert("Could not save note")}};els.noteModal.onclick=e=>{if(e.target===els.noteModal)closeNote()}}
+async function init(){theme(localStorage.getItem("amco-theme")||"light");events();auto();if(!supabaseReady){els.setupWarning.classList.remove("hidden");setBadge(els.connectionBadge,"Setup needed","bad");renderSummary();return}try{supabaseClient=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseAnonKey);setBadge(els.connectionBadge,"Connecting...","ok");subscribe();await load();setBadge(els.connectionBadge,"Live connected","ok");setBadge(els.saveBadge,"Ready","neutral")}catch(e){console.error(e);setBadge(els.connectionBadge,"Connection failed","bad")}}
+init();
