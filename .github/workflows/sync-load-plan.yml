@@ -1,0 +1,29 @@
+name: Sync load plan CSV
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  sync-load-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sync CSV into Supabase
+        run: node scripts/sync-load-plan.mjs
+        env:
+          LOAD_PLAN_CSV_URL: ${{ secrets.LOAD_PLAN_CSV_URL }}
+          LOAD_PLAN_CSV_BEARER_TOKEN: ${{ secrets.LOAD_PLAN_CSV_BEARER_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TRACKER_ID: oldbury-main
+          DEFAULT_KENNS_PER_LOAD: "11"
+          PRESERVE_STATUS: "true"
